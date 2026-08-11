@@ -1,9 +1,9 @@
 const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
 const CACHE_S = 3600;
+const UPGRADE_LABEL = { huge: 'Gros gain', big: 'Bon gain', medium: 'Gain moyen', small: 'Petit gain', tiny: 'Gain marginal', none: 'Aucun gain' };
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
-  const debug = url.searchParams.get('debug');
   try {
     const res = await fetch('https://wowaudit.com/v1/wishlists', {
       headers: { Authorization: WA_KEY, Accept: 'application/json' },
@@ -13,7 +13,7 @@ export async function onRequest(context) {
     if (!res.ok) return json({ error: 'wowaudit', status: res.status, body: text.slice(0, 400) }, 502);
     let raw;
     try { raw = JSON.parse(text); } catch (e) { return json({ error: 'parse', body: text.slice(0, 400) }, 502); }
-    if (debug) return json({ raw: raw });
+    if (url.searchParams.get('debug')) return json({ raw: raw });
     return json({ fetchedAt: new Date().toISOString(), characters: normalize(raw) });
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
@@ -21,56 +21,41 @@ export async function onRequest(context) {
 }
 
 function normalize(raw) {
-  const src = Array.isArray(raw) ? raw : (raw.characters || raw.wishlists || raw.data || []);
-  const list = Array.isArray(src) ? src : [];
-  return list.map(function (c) {
+  const chars = (raw && raw.characters) || [];
+  return chars.map(function (c) {
     const items = [];
-    collect(c.wishlists || c.wishlist || c.instances || c.items, items, '');
-    return {
-      name: c.name || c.character_name || c.character || '',
-      realm: c.realm || c.realm_slug || '',
-      updatedAt: c.last_updated || c.updated_at || c.report_date || null,
-      items: items
-    };
-  }).filter(function (c) { return c.name; });
-}
-
-function collect(node, out, diff) {
-  if (!node) return;
-  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, out, diff); }); return; }
-  if (typeof node !== 'object') return;
-
-  if (node.difficulty && !node.name && !node.item_name) { collect(childrenOf(node), out, String(node.difficulty)); return; }
-
-  const nm = node.item_name || node.name;
-  const hasGain = node.dps_gain !== undefined || node.gain !== undefined || node.value !== undefined;
-  if (nm && (hasGain || node.slot || node.item_id)) {
-    out.push({
-      item: nm,
-      itemId: node.item_id || node.id || null,
-      slot: node.slot || node.item_slot || '—',
-      boss: node.boss || node.encounter || node.source || '—',
-      gain: num(node.dps_gain !== undefined ? node.dps_gain : (node.gain !== undefined ? node.gain : node.value)),
-      difficulty: String(node.difficulty || diff || '')
+    let updated = null;
+    (c.instances || []).forEach(function (inst) {
+      (inst.difficulties || []).forEach(function (df) {
+        const wl = df.wishlist || {};
+        Object.keys(wl.updated_at || {}).forEach(function (spec) {
+          const d = wl.updated_at[spec];
+          if (d && (!updated || d > updated)) updated = d;
+        });
+        (wl.encounters || []).forEach(function (enc) {
+          (enc.items || []).forEach(function (it) {
+            (it.wishes || []).forEach(function (w) {
+              items.push({
+                item: it.name,
+                itemId: it.id || null,
+                slot: it.slot || '—',
+                boss: enc.name || '—',
+                raid: inst.name || '',
+                spec: w.specialization || '',
+                difficulty: df.difficulty || '',
+                pct: typeof w.percentage === 'number' ? Math.round(w.percentage * 10) / 10 : null,
+                abs: typeof w.absolute === 'number' ? Math.round(w.absolute) : null,
+                upgrade: UPGRADE_LABEL[w.upgrade] || w.upgrade || null,
+                manual: !!w.manually_edited,
+                outdated: !!w.outdated
+              });
+            });
+          });
+        });
+      });
     });
-    return;
-  }
-  Object.keys(node).forEach(function (k) {
-    const v = node[k];
-    if (v && typeof v === 'object') {
-      const d = /mythic|heroic|normal/i.test(k) ? k : diff;
-      collect(v, out, d);
-    }
-  });
-}
-
-function childrenOf(o) {
-  return o.instances || o.wishlists || o.items || o.wishes || [];
-}
-
-function num(v) {
-  const n = typeof v === 'number' ? v : parseFloat(String(v || '').replace(/[^0-9.\-]/g, ''));
-  return isNaN(n) ? null : Math.round(n);
+    return { name: c.name || '', realm: c.realm || '', updatedAt: updated, items: items };
+  }).filter(function (c) { return c.name; });
 }
 
 function json(obj, status) {
