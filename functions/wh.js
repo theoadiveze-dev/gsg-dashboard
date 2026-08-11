@@ -2,6 +2,8 @@ const CACHE_S = 2592000;
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
+  const tip = (url.searchParams.get('tooltip') || '').trim();
+  if (tip) return tooltip(tip);
   const q = (url.searchParams.get('q') || '').trim();
   if (!q) return json({ error: 'missing q' }, 400);
   try {
@@ -14,6 +16,27 @@ export async function onRequest(context) {
     const id = pickId(html, q);
     if (!id) return json({ q: q, id: null });
     return json({ q: q, id: id });
+  } catch (e) {
+    return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
+  }
+}
+
+async function tooltip(id) {
+  if (!/^\d+$/.test(id)) return json({ error: 'bad id' }, 400);
+  try {
+    const res = await fetch('https://nether.wowhead.com/tooltip/item/' + id + '?dataEnv=1&locale=0', {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+      cf: { cacheTtl: CACHE_S, cacheEverything: true }
+    });
+    if (!res.ok) return json({ error: 'wowhead', status: res.status }, 502);
+    const d = await res.json();
+    return json({
+      id: +id,
+      name: d.name || '',
+      quality: d.quality === undefined ? null : d.quality,
+      icon: d.icon ? 'https://wow.zamimg.com/images/wow/icons/large/' + d.icon + '.jpg' : '',
+      html: d.tooltip || ''
+    });
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
