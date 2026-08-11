@@ -43,6 +43,7 @@ function norm(r, det) {
   const signups = (d.signups || d.characters || r.signups || []).map(function (s) {
     const st = String(s.status || s.signup_status || '').toLowerCase();
     return {
+      charId: (s.character && s.character.id) || s.character_id || null,
       name: s.name || s.character_name || (s.character && s.character.name) || '',
       role: s.role || (s.character && s.character.role) || '',
       klass: s.class || (s.character && s.character.class) || '',
@@ -53,8 +54,21 @@ function norm(r, det) {
     };
   }).filter(function (s) { return s.name; });
 
+  const idName = {};
+  signups.forEach(function (x) { if (x.charId) idName[x.charId] = x; });
+  const mythic = /mythic/i.test(String(r.difficulty || ''));
+  const encounters = mythic ? (d.encounters || []).filter(function (e) { return e.enabled !== false; }).map(function (e) {
+    const picked = (e.selections || []).filter(function (x) { return x.selected; }).map(function (x) {
+      const who = idName[x.character_id];
+      return { name: who ? who.name : String(x.character_id), role: x.role || (who && who.role) || '', klass: x.class || (who && who.klass) || '' };
+    });
+    return { name: e.name || '', id: e.id, picked: picked };
+  }) : [];
+
   return {
     id: r.id,
+    mythic: mythic,
+    encounters: encounters,
     date: r.date || '',
     startTime: r.start_time && r.start_time !== '00:00' ? r.start_time : '20:30',
     endTime: r.end_time && r.end_time !== '00:00' ? r.end_time : '00:00',
