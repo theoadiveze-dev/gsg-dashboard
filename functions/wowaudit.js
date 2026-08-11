@@ -32,6 +32,22 @@ function normalize(raw) {
           const d = wl.updated_at[spec];
           if (d && (!updated || d > updated)) updated = d;
         });
+        Object.keys(wl).forEach(function (k) {
+          if (!/trinket/i.test(k) || !Array.isArray(wl[k])) return;
+          wl[k].forEach(function (it) {
+            (it.wishes || []).forEach(function (w) {
+              items.push({
+                item: it.name, itemId: it.id || null, slot: it.slot || 'Bijou',
+                boss: it.boss || it.source || '—', raid: inst.name || '',
+                spec: w.specialization || '', difficulty: df.difficulty || '',
+                pct: typeof w.percentage === 'number' ? Math.round(w.percentage * 10) / 10 : null,
+                abs: typeof w.absolute === 'number' ? Math.round(w.absolute) : null,
+                upgrade: UPGRADE_LABEL[w.upgrade] || w.upgrade || null,
+                manual: !!w.manually_edited, outdated: !!w.outdated
+              });
+            });
+          });
+        });
         (wl.encounters || []).forEach(function (enc) {
           (enc.items || []).forEach(function (it) {
             (it.wishes || []).forEach(function (w) {
