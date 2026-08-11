@@ -10,17 +10,19 @@ export async function onRequest(context) {
     if (list.error) return json(list, 502);
     if (debug === 'list') return json({ raw: list });
 
-    const raids = (Array.isArray(list) ? list : list.raids || []).filter(function (r) {
-      return String(r.date || '') >= SEASON_START;
+    const all = (Array.isArray(list) ? list : list.raids || []).filter(function (r) {
+      return String(r.date || '') >= SEASON_START && r.instance;
     });
-    const detailed = [];
-    for (const r of raids.slice(0, 40)) {
+    const horizon = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+    const near = all.filter(function (r) { return String(r.date) <= horizon; }).slice(0, 15);
+    const details = {};
+    for (const r of near) {
       const d = await wa('/v1/raids/' + r.id);
-      if (d && !d.error) detailed.push(d);
+      if (d && !d.error) details[r.id] = d;
     }
-    if (debug === 'one') return json({ raw: detailed[0] || null });
+    if (debug === 'one') return json({ raw: details[near[0] && near[0].id] || null });
 
-    return json({ fetchedAt: new Date().toISOString(), raids: detailed.map(norm) });
+    return json({ fetchedAt: new Date().toISOString(), raids: all.map(function (r) { return norm(r, details[r.id]); }) });
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
@@ -36,8 +38,9 @@ async function wa(path) {
   try { return JSON.parse(text); } catch (e) { return { error: 'parse', path: path, body: text.slice(0, 300) }; }
 }
 
-function norm(r) {
-  const signups = (r.signups || r.characters || []).map(function (s) {
+function norm(r, det) {
+  const d = det || {};
+  const signups = (d.signups || d.characters || r.signups || []).map(function (s) {
     const st = String(s.status || s.signup_status || '').toLowerCase();
     return {
       name: s.name || s.character_name || (s.character && s.character.name) || '',
@@ -53,11 +56,14 @@ function norm(r) {
   return {
     id: r.id,
     date: r.date || '',
-    startTime: r.start_time || '20:30',
-    endTime: r.end_time || '00:00',
+    startTime: r.start_time && r.start_time !== '00:00' ? r.start_time : '20:30',
+    endTime: r.end_time && r.end_time !== '00:00' ? r.end_time : '00:00',
     title: r.name || r.instance || '',
     difficulty: r.difficulty || '',
-    present: (r.present_size !== undefined ? r.present_size : signups.filter(function (s) { return s.status === 'inscrit'; }).length),
+    present: signups.length ? signups.filter(function (s) { return s.status === 'inscrit'; }).length : (r.present_size || 0),
+    total: r.total_size || 0,
+    status: r.status || '',
+    detailed: !!det,
     signups: signups
   };
 }
