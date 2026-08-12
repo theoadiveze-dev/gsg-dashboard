@@ -5,16 +5,17 @@ const UPGRADE_LABEL = { huge: 'Gros gain', big: 'Bon gain', medium: 'Gain moyen'
 export async function onRequest(context) {
   const url = new URL(context.request.url);
   try {
+    const fresh = !!url.searchParams.get('fresh');
     const res = await fetch('https://wowaudit.com/v1/wishlists', {
       headers: { Authorization: WA_KEY, Accept: 'application/json' },
-      cf: { cacheTtl: CACHE_S, cacheEverything: true }
+      cf: fresh ? { cacheTtl: 0, cacheEverything: false } : { cacheTtl: CACHE_S, cacheEverything: true }
     });
     const text = await res.text();
     if (!res.ok) return json({ error: 'wowaudit', status: res.status, body: text.slice(0, 400) }, 502);
     let raw;
     try { raw = JSON.parse(text); } catch (e) { return json({ error: 'parse', body: text.slice(0, 400) }, 502); }
     if (url.searchParams.get('debug')) return json({ raw: raw });
-    return json({ fetchedAt: new Date().toISOString(), characters: normalize(raw) });
+    return json({ fetchedAt: new Date().toISOString(), characters: normalize(raw) }, 200, fresh);
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
@@ -74,9 +75,9 @@ function normalize(raw) {
   }).filter(function (c) { return c.name; });
 }
 
-function json(obj, status) {
+function json(obj, status, noStore) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S, 'Access-Control-Allow-Origin': '*' }
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': noStore ? 'no-store' : 'public, max-age=' + CACHE_S, 'Access-Control-Allow-Origin': '*' }
   });
 }
