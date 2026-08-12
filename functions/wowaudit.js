@@ -77,6 +77,6 @@ function normalize(raw) {
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S }
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S, 'Access-Control-Allow-Origin': '*' }
   });
 }
