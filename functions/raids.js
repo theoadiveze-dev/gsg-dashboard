@@ -51,7 +51,8 @@ function norm(r, det) {
       status: /present|confirmed|accept|selected|yes/.test(st) ? 'inscrit'
         : /absent|declin|no/.test(st) ? 'absent'
         : /tentative|maybe|late|bench/.test(st) ? 'attente' : (st || 'attente'),
-      selected: !!(s.selected || s.status === 'present')
+      selected: !!(s.selected || s.status === 'present'),
+      comment: (s.comment || '').trim()
     };
   }).filter(function (s) { return s.name; });
 

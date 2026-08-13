@@ -26,12 +26,16 @@ function normalize(raw) {
   return chars.map(function (c) {
     const items = [];
     let updated = null;
+    const specDates = {};
     (c.instances || []).forEach(function (inst) {
       (inst.difficulties || []).forEach(function (df) {
         const wl = df.wishlist || {};
         Object.keys(wl.updated_at || {}).forEach(function (spec) {
           const d = wl.updated_at[spec];
-          if (d && (!updated || d > updated)) updated = d;
+          if (!d) return;
+          if (!updated || d > updated) updated = d;
+          const key = spec + ' · ' + (df.difficulty || '');
+          if (!specDates[key] || d > specDates[key]) specDates[key] = d;
         });
         Object.keys(wl).forEach(function (k) {
           if (!/trinket/i.test(k) || !Array.isArray(wl[k])) return;
@@ -71,7 +75,7 @@ function normalize(raw) {
         });
       });
     });
-    return { name: c.name || '', realm: c.realm || '', updatedAt: updated, items: items };
+    return { name: c.name || '', realm: c.realm || '', updatedAt: updated, specDates: specDates, items: items };
   }).filter(function (c) { return c.name; });
 }
 
