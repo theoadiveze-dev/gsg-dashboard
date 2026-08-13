@@ -20,10 +20,15 @@
 //   /wcl?quota=1                   → points d'API restants sur l'heure
 //   &debug=1                       → ajoute la réponse GraphQL brute
 
-const FN_BUILD = 'wcl v1.2.0';
+const FN_BUILD = 'wcl v1.3.0';
 const API = 'https://www.warcraftlogs.com/api/v2/client';
 const TOKEN_URL = 'https://www.warcraftlogs.com/oauth/token';
 const CACHE_S = 1800;
+// Warcraft Logs limite par adresse IP, et les fonctions Cloudflare sortent par
+// des IP partagées : on peut être bloqué sans avoir rien consommé. La seule
+// défense est de ne jamais poser deux fois la même question. Les logs d'une
+// soirée passée sont immuables, donc le cache peut être long.
+const GQL_CACHE_S = 21600;
 const DEF = { guild: 'Gilt Sky Gaming', realm: 'ysondre', region: 'EU' };
 
 export async function onRequest(context) {
@@ -237,6 +242,14 @@ const Q_RANKS = `query($code:String!,$ids:[Int]){
 // statut non-200 remonte tel quel — le front doit pouvoir dire « WCL a répondu
 // 429 » et non « aucun rapport ».
 async function run(env, query, variables, retried) {
+  const ck = new Request('https://wcl-gql.internal/' + hash(query + '|' + JSON.stringify(variables || {})));
+  if (!retried) {
+    try {
+      const hit = await caches.default.match(ck);
+      if (hit) { const j = await hit.json(); if (j && j.data) return { ok: true, json: j, cached: true }; }
+    } catch (e) { /* cache indisponible */ }
+  }
+
   const tok = await getToken(env, !!retried);
   if (!tok.ok) {
     return { ok: false, err: { error: 'oauth', detail: 'Warcraft Logs a refusé les identifiants (' + tok.status + ').', status: tok.status, body: tok.body, httpStatus: 502 } };
@@ -261,7 +274,9 @@ async function run(env, query, variables, retried) {
     return {
       ok: false, err: {
         error: 'wcl_http', status: res.status,
-        detail: res.status === 429 ? 'Quota Warcraft Logs épuisé pour l’heure en cours. Il se recharge progressivement — /wcl?quota=1 donne les points restants.'
+        detail: res.status === 429 ? (/ip address/i.test(text)
+            ? 'Warcraft Logs bloque temporairement l’adresse IP de sortie de Cloudflare — elle est partagée. Réessaie dans quelques minutes ; les soirées déjà consultées restent lisibles depuis le cache.'
+            : 'Quota Warcraft Logs épuisé pour l’heure en cours — /wcl?quota=1 donne les points restants.')
           : res.status === 401 || res.status === 403 ? 'Warcraft Logs a refusé l’accès (clé ou droits).'
           : 'Warcraft Logs a répondu ' + res.status + '.',
         body: text.slice(0, 400), httpStatus: 502
@@ -277,6 +292,11 @@ async function run(env, query, variables, retried) {
   if (!body.data) {
     return { ok: false, err: { error: 'reponse_vide', detail: 'Warcraft Logs a répondu 200 sans données.', body: text.slice(0, 400), httpStatus: 502 } };
   }
+  try {
+    await caches.default.put(ck, new Response(JSON.stringify(body), {
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=' + GQL_CACHE_S }
+    }));
+  } catch (e) { /* pas grave */ }
   return { ok: true, json: body };
 }
 
