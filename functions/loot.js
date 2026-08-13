@@ -1,74 +1,72 @@
-// Historique de loot wowaudit (alimenté automatiquement par le module
-// RCLootCouncil_wowaudit). Le chemin exact de l'endpoint n'est pas documenté
-// publiquement : cette fonction sonde les candidats plausibles et renvoie
-// celui qui répond, avec un échantillon de la charge utile.
+// Sonde v2 : /v1/loot existe (406 = négociation de contenu refusée, pas 404).
+// On teste les combinaisons d'en-têtes et de paramètres pour trouver celle
+// que wowaudit accepte.
 //
-//   /loot?probe=1   → teste tous les chemins, renvoie le tableau des résultats
-//   /loot           → utilise le premier chemin qui répond et normalise
-//   /loot?path=...  → force un chemin précis (une fois qu'on le connaît)
+//   /loot?probe=1  → matrice de tests
+//   /loot          → première combinaison qui répond 200, normalisée
 
 const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
 const CACHE_S = 900;
-const CANDIDATES = [
-  '/v1/loot_history',
-  '/v1/loot',
-  '/v1/loots',
-  '/v1/wishlists/loot_history',
-  '/v1/loot_history/raw',
-  '/v1/historical_loot',
-  '/v1/raid_loot',
-  '/v1/team/loot_history',
-  '/api/v1/loot_history',
-  '/guild/eu/ysondre/gilt-sky-gaming/teams/main/loot/history.json'
+
+const HEADERS = [
+  ['json', { Accept: 'application/json' }],
+  ['json+ct', { Accept: 'application/json', 'Content-Type': 'application/json' }],
+  ['any', { Accept: '*/*' }],
+  ['none', {}],
+  ['vnd', { Accept: 'application/vnd.api+json' }],
+  ['ua', { Accept: 'application/json', 'User-Agent': 'giltsky-portal/1.0' }]
 ];
+
+const QUERIES = ['', '?limit=50', '?season=2', '?page=1', '?raid_difficulty=mythic'];
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
-  const forced = url.searchParams.get('path');
-  const probe = !!url.searchParams.get('probe');
+  const base = url.searchParams.get('path') || '/v1/loot';
 
   try {
-    if (probe) {
+    if (url.searchParams.get('probe')) {
       const out = [];
-      for (const p of CANDIDATES) {
-        const r = await call(p);
-        out.push({ path: p, status: r.status, sample: r.text.slice(0, 300) });
+      for (const [hname, h] of HEADERS) {
+        for (const q of QUERIES) {
+          const r = await call(base + q, h);
+          out.push({ h: hname, q: q || '(rien)', status: r.status, sample: r.text.slice(0, 160) });
+          if (r.status === 200) return json({ found: { path: base + q, headers: hname }, sample: r.text.slice(0, 1200), tried: out });
+        }
       }
-      return json({ probe: out });
+      return json({ found: null, tried: out });
     }
 
-    const paths = forced ? [forced] : CANDIDATES;
-    for (const p of paths) {
-      const r = await call(p);
-      if (r.status !== 200) continue;
-      let raw;
-      try { raw = JSON.parse(r.text); } catch (e) { continue; }
-      if (url.searchParams.get('debug')) return json({ path: p, raw: raw });
-      return json({ fetchedAt: new Date().toISOString(), path: p, entries: normalize(raw) });
+    for (const [, h] of HEADERS) {
+      for (const q of QUERIES) {
+        const r = await call(base + q, h);
+        if (r.status !== 200) continue;
+        let raw;
+        try { raw = JSON.parse(r.text); } catch (e) { continue; }
+        if (url.searchParams.get('debug')) return json({ path: base + q, raw: raw });
+        return json({ fetchedAt: new Date().toISOString(), path: base + q, entries: normalize(raw) });
+      }
     }
-    return json({ error: 'endpoint', tried: paths }, 502);
+    return json({ error: 'endpoint', base: base }, 502);
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
 }
 
-function call(path) {
-  return fetch('https://wowaudit.com' + path, {
-    headers: { Authorization: WA_KEY, Accept: 'application/json' }
-  }).then(function (res) {
+function call(path, extra) {
+  const headers = Object.assign({ Authorization: WA_KEY }, extra || {});
+  return fetch('https://wowaudit.com' + path, { headers: headers }).then(function (res) {
     return res.text().then(function (t) { return { status: res.status, text: t }; });
   }).catch(function (e) {
     return { status: 0, text: String(e && e.message) };
   });
 }
 
-// Tolérante à la forme : wowaudit peut renvoyer un tableau nu ou un objet
-// enveloppe. On ne garde que ce dont le journal a besoin.
 function normalize(raw) {
   const list = Array.isArray(raw) ? raw
     : Array.isArray(raw && raw.loot) ? raw.loot
     : Array.isArray(raw && raw.entries) ? raw.entries
     : Array.isArray(raw && raw.loot_history) ? raw.loot_history
+    : Array.isArray(raw && raw.history) ? raw.history
     : [];
   return list.map(function (l) {
     return {
@@ -88,6 +86,6 @@ function normalize(raw) {
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S, 'Access-Control-Allow-Origin': '*' }
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
   });
 }
