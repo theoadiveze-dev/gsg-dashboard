@@ -17,12 +17,13 @@
 //   /wcl?deaths=CODE[&fight=3]     → morts, dans l'ordre, sort et seconde du pull
 //   /wcl?damage=CODE[&fight=3]     → dégâts pris par joueur et par sort
 //   /wcl?parses=CODE[&fight=3]     → classements dps/hps du rapport
+//   /wcl?quota=1                   → points d'API restants sur l'heure
 //   &debug=1                       → ajoute la réponse GraphQL brute
 
-const FN_BUILD = 'wcl v1.1.0';
+const FN_BUILD = 'wcl v1.2.0';
 const API = 'https://www.warcraftlogs.com/api/v2/client';
 const TOKEN_URL = 'https://www.warcraftlogs.com/oauth/token';
-const CACHE_S = 300;
+const CACHE_S = 1800;
 const DEF = { guild: 'Gilt Sky Gaming', realm: 'ysondre', region: 'EU' };
 
 export async function onRequest(context) {
@@ -43,6 +44,18 @@ export async function onRequest(context) {
   const region = (url.searchParams.get('region') || env.WCL_REGION || DEF.region).toUpperCase();
 
   try {
+    if (url.searchParams.get('quota')) {
+      const q = await run(env, Q_QUOTA, {});
+      if (!q.ok) return json(Object.assign({ build: FN_BUILD }, q.err), q.err.httpStatus || 502);
+      const r = path(q.json, ['data', 'rateLimitData']) || {};
+      return json({
+        build: FN_BUILD, fetchedAt: new Date().toISOString(),
+        parHeure: r.limitPerHour, depenses: r.pointsSpentThisHour,
+        restants: r.limitPerHour != null && r.pointsSpentThisHour != null ? Math.max(0, Math.round((r.limitPerHour - r.pointsSpentThisHour) * 100) / 100) : null,
+        remiseAZeroDans: r.pointsResetIn != null ? r.pointsResetIn + ' s' : null
+      });
+    }
+
     if (url.searchParams.get('probe')) {
       const out = { build: FN_BUILD, fetchedAt: new Date().toISOString(), guild: guild, realm: realm || null, region: region };
       if (!realm) {
@@ -213,6 +226,8 @@ const Q_TABLE = `query($code:String!,$start:Float!,$end:Float!,$type:TableDataTy
   reportData{ report(code:$code){ table(dataType:$type, startTime:$start, endTime:$end) } }
 }`;
 
+const Q_QUOTA = `query{ rateLimitData{ limitPerHour pointsSpentThisHour pointsResetIn } }`;
+
 const Q_RANKS = `query($code:String!,$ids:[Int]){
   reportData{ report(code:$code){ rankings(fightIDs:$ids) } }
 }`;
@@ -246,7 +261,7 @@ async function run(env, query, variables, retried) {
     return {
       ok: false, err: {
         error: 'wcl_http', status: res.status,
-        detail: res.status === 429 ? 'Quota Warcraft Logs atteint — réessaie dans quelques minutes.'
+        detail: res.status === 429 ? 'Quota Warcraft Logs épuisé pour l’heure en cours. Il se recharge progressivement — /wcl?quota=1 donne les points restants.'
           : res.status === 401 || res.status === 403 ? 'Warcraft Logs a refusé l’accès (clé ou droits).'
           : 'Warcraft Logs a répondu ' + res.status + '.',
         body: text.slice(0, 400), httpStatus: 502
