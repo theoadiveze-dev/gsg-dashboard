@@ -18,9 +18,16 @@
 //   /wcl?damage=CODE[&fight=3]     → dégâts pris par joueur et par sort
 //   /wcl?parses=CODE[&fight=3]     → classements dps/hps du rapport
 //   /wcl?quota=1                   → points d'API restants sur l'heure
+//   /wcl?token=1                   → jeton OAuth pour appeler WCL depuis le navigateur
+//
+// Pourquoi /token : Warcraft Logs limite par adresse IP, et les fonctions
+// Cloudflare sortent par des IP partagées — on se fait bloquer sans avoir rien
+// consommé. En laissant le navigateur de l'officier appeler l'API, le compteur
+// devient le sien. Le jeton est en lecture seule et expire ; le secret, lui, ne
+// quitte jamais le serveur.
 //   &debug=1                       → ajoute la réponse GraphQL brute
 
-const FN_BUILD = 'wcl v1.4.0';
+const FN_BUILD = 'wcl v1.6.0';
 const API = 'https://www.warcraftlogs.com/api/v2/client';
 const TOKEN_URL = 'https://www.warcraftlogs.com/oauth/token';
 const CACHE_S = 120;
@@ -54,6 +61,12 @@ export async function onRequest(context) {
   const region = (url.searchParams.get('region') || env.WCL_REGION || DEF.region).toUpperCase();
 
   try {
+    if (url.searchParams.get('token')) {
+      const tok = await getToken(env, !!url.searchParams.get('fresh'));
+      if (!tok.ok) return json({ build: FN_BUILD, error: 'oauth', detail: 'Warcraft Logs a refusé les identifiants (' + tok.status + ').', status: tok.status, body: tok.body }, 502);
+      return json({ build: FN_BUILD, access_token: tok.value, expires_in: 43200 }, null, 0);
+    }
+
     if (url.searchParams.get('quota')) {
       const q = await run(env, Q_QUOTA, {}, 60);
       if (!q.ok) return json(Object.assign({ build: FN_BUILD }, q.err), q.err.httpStatus || 502);
@@ -377,7 +390,9 @@ function mapFight(f) {
     boss: !!f.encounterID,
     difficulte: DIFF[f.difficulty] || (f.difficulty != null ? String(f.difficulty) : ''),
     kill: !!f.kill,
-    restant: f.fightPercentage != null ? f.fightPercentage / 100 : null,
+    // fightPercentage est déjà un pourcentage de vie restante (33.62 = 33,6 %).
+    // Le diviser en faisait une fraction affichée comme « 0,3 % ».
+    restant: f.fightPercentage != null ? f.fightPercentage : null,
     phase: f.lastPhase != null ? f.lastPhase : null,
     debut: f.startTime, fin: f.endTime,
     duree: f.endTime != null && f.startTime != null ? Math.round((f.endTime - f.startTime) / 1000) : null,
@@ -424,7 +439,7 @@ function json(obj, status, ttl) {
     status: status || 200,
     headers: {
       'Content-Type': 'application/json',
-      'Cache-Control': status ? 'no-store' : 'public, max-age=' + (ttl || CACHE_S),
+      'Cache-Control': status || ttl === 0 ? 'no-store' : 'public, max-age=' + (ttl || CACHE_S),
       'Access-Control-Allow-Origin': '*'
     }
   });
