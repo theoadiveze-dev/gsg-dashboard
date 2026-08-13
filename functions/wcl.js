@@ -20,15 +20,20 @@
 //   /wcl?quota=1                   → points d'API restants sur l'heure
 //   &debug=1                       → ajoute la réponse GraphQL brute
 
-const FN_BUILD = 'wcl v1.3.0';
+const FN_BUILD = 'wcl v1.4.0';
 const API = 'https://www.warcraftlogs.com/api/v2/client';
 const TOKEN_URL = 'https://www.warcraftlogs.com/oauth/token';
-const CACHE_S = 1800;
+const CACHE_S = 120;
 // Warcraft Logs limite par adresse IP, et les fonctions Cloudflare sortent par
 // des IP partagées : on peut être bloqué sans avoir rien consommé. La seule
 // défense est de ne jamais poser deux fois la même question. Les logs d'une
 // soirée passée sont immuables, donc le cache peut être long.
-const GQL_CACHE_S = 21600;
+// Deux régimes. Ce qui bouge pendant la soirée — la liste des rapports, la
+// liste des pulls d'un rapport en cours — vit deux minutes : en direct, le pull
+// qui vient de finir doit apparaître. Le détail d'un pull terminé (morts,
+// dégâts) ne changera plus jamais : six heures.
+const TTL_LIVE = 120;
+const TTL_FIGE = 21600;
 const DEF = { guild: 'Gilt Sky Gaming', realm: 'ysondre', region: 'EU' };
 
 export async function onRequest(context) {
@@ -50,7 +55,7 @@ export async function onRequest(context) {
 
   try {
     if (url.searchParams.get('quota')) {
-      const q = await run(env, Q_QUOTA, {});
+      const q = await run(env, Q_QUOTA, {}, 60);
       if (!q.ok) return json(Object.assign({ build: FN_BUILD }, q.err), q.err.httpStatus || 502);
       const r = path(q.json, ['data', 'rateLimitData']) || {};
       return json({
@@ -68,7 +73,7 @@ export async function onRequest(context) {
         out.detail = 'Le royaume de la guilde est nécessaire. Appelle /wcl?probe=1&realm=ysondre ou définis WCL_REALM.';
         return json(out, 400);
       }
-      const q = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: 5 });
+      const q = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: 5 }, TTL_LIVE);
       if (!q.ok) return json(Object.assign(out, q.err), q.err.httpStatus || 502);
       out.oauth = 'ok';
       const list = path(q.json, ['data', 'reportData', 'reports', 'data']) || [];
@@ -85,7 +90,7 @@ export async function onRequest(context) {
     if (url.searchParams.get('reports')) {
       if (!realm) return json({ build: FN_BUILD, error: 'royaume_absent' }, 400);
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10) || 20, 100);
-      const q = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: limit });
+      const q = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: limit }, TTL_LIVE);
       if (!q.ok) return json(Object.assign({ build: FN_BUILD }, q.err), q.err.httpStatus || 502);
       const list = path(q.json, ['data', 'reportData', 'reports', 'data']) || [];
       return json({ build: FN_BUILD, fetchedAt: new Date().toISOString(), guild: guild, realm: realm, region: region, reportCount: list.length, reports: list.map(mapReport) });
@@ -100,7 +105,9 @@ export async function onRequest(context) {
 
     // Toutes les routes de détail ont besoin du squelette du rapport :
     // acteurs et sorts servent à traduire les IDs en noms.
-    const base = await run(env, Q_REPORT, { code: code });
+    // Le squelette du rapport contient la liste des pulls : en soirée il grossit
+    // à chaque wipe, donc régime court.
+    const base = await run(env, Q_REPORT, { code: code }, TTL_LIVE);
     if (!base.ok) return json(Object.assign({ build: FN_BUILD, code: code }, base.err), base.err.httpStatus || 502);
     const rep = path(base.json, ['data', 'reportData', 'report']);
     if (!rep) {
@@ -135,7 +142,7 @@ export async function onRequest(context) {
     }
 
     if (url.searchParams.get('deaths')) {
-      const q = await run(env, Q_DEATHS, { code: code, start: window.start, end: window.end });
+      const q = await run(env, Q_DEATHS, { code: code, start: window.start, end: window.end }, fightIDs && fightIDs.length ? TTL_FIGE : TTL_LIVE);
       if (!q.ok) return json(Object.assign({ build: FN_BUILD, code: code }, q.err), q.err.httpStatus || 502);
       const raw = path(q.json, ['data', 'reportData', 'report', 'events', 'data']) || [];
       const out = Object.assign(head, {
@@ -164,7 +171,7 @@ export async function onRequest(context) {
     }
 
     if (url.searchParams.get('damage')) {
-      const q = await run(env, Q_TABLE, { code: code, start: window.start, end: window.end, type: 'DamageTaken' });
+      const q = await run(env, Q_TABLE, { code: code, start: window.start, end: window.end, type: 'DamageTaken' }, fightIDs && fightIDs.length ? TTL_FIGE : TTL_LIVE);
       if (!q.ok) return json(Object.assign({ build: FN_BUILD, code: code }, q.err), q.err.httpStatus || 502);
       const t = path(q.json, ['data', 'reportData', 'report', 'table']);
       const entries = path(t, ['data', 'entries']) || [];
@@ -184,7 +191,7 @@ export async function onRequest(context) {
     }
 
     // parses
-    const q = await run(env, Q_RANKS, { code: code, ids: fightIDs });
+    const q = await run(env, Q_RANKS, { code: code, ids: fightIDs }, TTL_FIGE);
     if (!q.ok) return json(Object.assign({ build: FN_BUILD, code: code }, q.err), q.err.httpStatus || 502);
     const rk = path(q.json, ['data', 'reportData', 'report', 'rankings']);
     return json(Object.assign(head, {
@@ -241,8 +248,9 @@ const Q_RANKS = `query($code:String!,$ids:[Int]){
 // mis en cache devenu invalide : on le jette et on retente une fois. Tout autre
 // statut non-200 remonte tel quel — le front doit pouvoir dire « WCL a répondu
 // 429 » et non « aucun rapport ».
-async function run(env, query, variables, retried) {
-  const ck = new Request('https://wcl-gql.internal/' + hash(query + '|' + JSON.stringify(variables || {})));
+async function run(env, query, variables, ttl, retried) {
+  const life = ttl || TTL_LIVE;
+  const ck = new Request('https://wcl-gql.internal/' + hash(query + '|' + JSON.stringify(variables || {})) + '/' + life);
   if (!retried) {
     try {
       const hit = await caches.default.match(ck);
@@ -264,7 +272,7 @@ async function run(env, query, variables, retried) {
 
   if (res.status === 401 && !retried) {
     await dropToken(env);
-    return run(env, query, variables, true);
+    return run(env, query, variables, ttl, true);
   }
 
   let body = null;
@@ -294,7 +302,7 @@ async function run(env, query, variables, retried) {
   }
   try {
     await caches.default.put(ck, new Response(JSON.stringify(body), {
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=' + GQL_CACHE_S }
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=' + life }
     }));
   } catch (e) { /* pas grave */ }
   return { ok: true, json: body };
@@ -411,12 +419,12 @@ function hash(s) {
   return Math.abs(h).toString(36);
 }
 
-function json(obj, status) {
+function json(obj, status, ttl) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
     headers: {
       'Content-Type': 'application/json',
-      'Cache-Control': status ? 'no-store' : 'public, max-age=' + CACHE_S,
+      'Cache-Control': status ? 'no-store' : 'public, max-age=' + (ttl || CACHE_S),
       'Access-Control-Allow-Origin': '*'
     }
   });
