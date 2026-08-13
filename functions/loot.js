@@ -8,6 +8,7 @@
 //   /loot?season=15  → force une saison
 //   /loot?debug=1    → réponse brute de wowaudit (pour inspecter les champs)
 
+const FN_BUILD = 'loot v1.22.0';
 const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
 const CACHE_S = 600;
 
@@ -18,7 +19,7 @@ export async function onRequest(context) {
     let period = null;
     if (!season) {
       const p = await call('/v1/period');
-      if (p.status !== 200) return json({ error: 'period', status: p.status, body: p.text.slice(0, 300) }, 502);
+      if (p.status !== 200) return json({ build: FN_BUILD, error: 'period', status: p.status, body: p.text.slice(0, 300) }, 502);
       try { period = JSON.parse(p.text); } catch (e) { return json({ error: 'period_parse', body: p.text.slice(0, 300) }, 502); }
       season = period.season || period.current_season || period.season_id ||
         (period.current && (period.current.season || period.current.season_id));
@@ -30,9 +31,9 @@ export async function onRequest(context) {
 
     let raw;
     try { raw = JSON.parse(r.text); } catch (e) { return json({ error: 'parse', body: r.text.slice(0, 300) }, 502); }
-    if (url.searchParams.get('debug')) return json({ season: season, period: period, raw: raw });
+    if (url.searchParams.get('debug')) return json({ build: FN_BUILD, season: season, period: period, raw: raw });
 
-    return json({ fetchedAt: new Date().toISOString(), season: season, entries: normalize(raw) });
+    return json({ build: FN_BUILD, fetchedAt: new Date().toISOString(), season: season, entries: normalize(raw) });
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
