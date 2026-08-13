@@ -3,7 +3,7 @@ const CACHE_S = 2592000;
 export async function onRequest(context) {
   const url = new URL(context.request.url);
   const tip = (url.searchParams.get('tooltip') || '').trim();
-  if (tip) return tooltip(tip);
+  if (tip) return tooltip(tip, (url.searchParams.get('ilvl') || '').trim());
   const q = (url.searchParams.get('q') || '').trim();
   if (!q) return json({ error: 'missing q' }, 400);
   try {
@@ -21,10 +21,11 @@ export async function onRequest(context) {
   }
 }
 
-async function tooltip(id) {
+async function tooltip(id, ilvl) {
   if (!/^\d+$/.test(id)) return json({ error: 'bad id' }, 400);
+  const lvl = /^\d{2,4}$/.test(ilvl) ? '&ilvl=' + ilvl : '';
   try {
-    const res = await fetch('https://nether.wowhead.com/tooltip/item/' + id + '?dataEnv=1&locale=0', {
+    const res = await fetch('https://nether.wowhead.com/tooltip/item/' + id + '?dataEnv=1&locale=0' + lvl, {
       headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
       cf: { cacheTtl: CACHE_S, cacheEverything: true }
     });
@@ -35,11 +36,19 @@ async function tooltip(id) {
       name: d.name || '',
       quality: d.quality === undefined ? null : d.quality,
       icon: d.icon ? 'https://wow.zamimg.com/images/wow/icons/large/' + d.icon + '.jpg' : '',
+      ilvl: itemLevel(d),
       html: d.tooltip || ''
     });
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
+}
+
+function itemLevel(d) {
+  if (typeof d.level === 'number') return d.level;
+  const txt = String(d.tooltip || '').replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, ' ');
+  const m = txt.match(/Item Level\s*(\d+)/i) || txt.match(/Niveau d.objet\s*(\d+)/i);
+  return m ? +m[1] : null;
 }
 
 function pickId(html, q) {
@@ -60,6 +69,6 @@ function pickId(html, q) {
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S }
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S, 'Access-Control-Allow-Origin': '*' }
   });
 }

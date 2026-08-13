@@ -5,33 +5,34 @@ const SEASON_START = '2026-08-19';
 export async function onRequest(context) {
   const url = new URL(context.request.url);
   const debug = url.searchParams.get('debug');
+  const fresh = !!url.searchParams.get('fresh');
   try {
-    const list = await wa('/v1/raids?include_past=true');
+    const list = await wa('/v1/raids?include_past=true', fresh);
     if (list.error) return json(list, 502);
     if (debug === 'list') return json({ raw: list });
 
     const all = (Array.isArray(list) ? list : list.raids || []).filter(function (r) {
-      return String(r.date || '') >= SEASON_START && r.instance;
+      return String(r.date || '') >= SEASON_START;
     });
     const horizon = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
     const near = all.filter(function (r) { return String(r.date) <= horizon; }).slice(0, 15);
     const details = {};
     for (const r of near) {
-      const d = await wa('/v1/raids/' + r.id);
+      const d = await wa('/v1/raids/' + r.id, fresh);
       if (d && !d.error) details[r.id] = d;
     }
     if (debug === 'one') return json({ raw: details[near[0] && near[0].id] || null });
 
-    return json({ fetchedAt: new Date().toISOString(), raids: all.map(function (r) { return norm(r, details[r.id]); }) });
+    return json({ fetchedAt: new Date().toISOString(), raids: all.map(function (r) { return norm(r, details[r.id]); }) }, 200, fresh);
   } catch (e) {
     return json({ error: 'network', message: String(e && e.message).slice(0, 200) }, 502);
   }
 }
 
-async function wa(path) {
+async function wa(path, fresh) {
   const res = await fetch('https://wowaudit.com' + path, {
     headers: { Authorization: WA_KEY, Accept: 'application/json' },
-    cf: { cacheTtl: CACHE_S, cacheEverything: true }
+    cf: fresh ? { cacheTtl: 0, cacheEverything: false } : { cacheTtl: CACHE_S, cacheEverything: true }
   });
   const text = await res.text();
   if (!res.ok) return { error: 'wowaudit', status: res.status, path: path, body: text.slice(0, 300) };
@@ -50,7 +51,8 @@ function norm(r, det) {
       status: /present|confirmed|accept|selected|yes/.test(st) ? 'inscrit'
         : /absent|declin|no/.test(st) ? 'absent'
         : /tentative|maybe|late|bench/.test(st) ? 'attente' : (st || 'attente'),
-      selected: !!(s.selected || s.status === 'present')
+      selected: !!(s.selected || s.status === 'present'),
+      comment: (s.comment || '').trim()
     };
   }).filter(function (s) { return s.name; });
 
@@ -72,7 +74,8 @@ function norm(r, det) {
     date: r.date || '',
     startTime: r.start_time && r.start_time !== '00:00' ? r.start_time : '20:30',
     endTime: r.end_time && r.end_time !== '00:00' ? r.end_time : '00:00',
-    title: r.name || r.instance || '',
+    title: r.title || r.name || r.instance || '',
+    instance: r.instance || '',
     difficulty: r.difficulty || '',
     present: signups.length ? signups.filter(function (s) { return s.status === 'inscrit'; }).length : (r.present_size || 0),
     total: r.total_size || 0,
@@ -82,9 +85,9 @@ function norm(r, det) {
   };
 }
 
-function json(obj, status) {
+function json(obj, status, noStore) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + CACHE_S }
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': noStore ? 'no-store' : 'public, max-age=' + CACHE_S, 'Access-Control-Allow-Origin': '*' }
   });
 }
