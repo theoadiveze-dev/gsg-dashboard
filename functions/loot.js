@@ -8,7 +8,7 @@
 //   /loot?season=15  → force une saison
 //   /loot?debug=1    → réponse brute de wowaudit (pour inspecter les champs)
 
-const FN_BUILD = 'loot v1.22.0';
+const FN_BUILD = 'loot v1.23.0';
 const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
 const CACHE_S = 600;
 
@@ -21,13 +21,18 @@ export async function onRequest(context) {
       const p = await call('/v1/period');
       if (p.status !== 200) return json({ build: FN_BUILD, error: 'period', status: p.status, body: p.text.slice(0, 300) }, 502);
       try { period = JSON.parse(p.text); } catch (e) { return json({ error: 'period_parse', body: p.text.slice(0, 300) }, 502); }
-      season = period.season || period.current_season || period.season_id ||
-        (period.current && (period.current.season || period.current.season_id));
-      if (!season) return json({ error: 'season_absente', period: period }, 502);
+      // /v1/period renvoie la saison comme objet ({id, name, ...}) : on veut l'ID.
+      const cand = [period.season, period.current_season, period.current && period.current.season];
+      for (const c of cand) {
+        if (c && typeof c === 'object' && c.id) { season = c.id; break; }
+        if (typeof c === 'number' || (typeof c === 'string' && c)) { season = c; break; }
+      }
+      if (!season) season = period.season_id || period.keystone_season_id || null;
+      if (!season) return json({ build: FN_BUILD, error: 'season_absente', period: period }, 502);
     }
 
     const r = await call('/v1/loot_history/' + season);
-    if (r.status !== 200) return json({ error: 'loot_history', season: season, status: r.status, body: r.text.slice(0, 300) }, 502);
+    if (r.status !== 200) return json({ build: FN_BUILD, error: 'loot_history', season: season, status: r.status, body: r.text.slice(0, 300) }, 502);
 
     let raw;
     try { raw = JSON.parse(r.text); } catch (e) { return json({ error: 'parse', body: r.text.slice(0, 300) }, 502); }
