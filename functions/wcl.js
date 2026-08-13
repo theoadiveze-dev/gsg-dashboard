@@ -19,6 +19,8 @@
 //   /wcl?parses=CODE[&fight=3]     → classements dps/hps du rapport
 //   /wcl?quota=1                   → points d'API restants sur l'heure
 //   /wcl?token=1                   → jeton OAuth pour appeler WCL depuis le navigateur
+//   /wcl?ilvl=1                    → ilvl relevé par joueur au dernier raid logué
+//                                    (wowaudit n'expose pas l'ilvl : les logs sont la seule source)
 //
 // Pourquoi /token : Warcraft Logs limite par adresse IP, et les fonctions
 // Cloudflare sortent par des IP partagées — on se fait bloquer sans avoir rien
@@ -27,7 +29,7 @@
 // quitte jamais le serveur.
 //   &debug=1                       → ajoute la réponse GraphQL brute
 
-const FN_BUILD = 'wcl v1.6.0';
+const FN_BUILD = 'wcl v1.7.0';
 const API = 'https://www.warcraftlogs.com/api/v2/client';
 const TOKEN_URL = 'https://www.warcraftlogs.com/oauth/token';
 const CACHE_S = 120;
@@ -65,6 +67,27 @@ export async function onRequest(context) {
       const tok = await getToken(env, !!url.searchParams.get('fresh'));
       if (!tok.ok) return json({ build: FN_BUILD, error: 'oauth', detail: 'Warcraft Logs a refusé les identifiants (' + tok.status + ').', status: tok.status, body: tok.body }, 502);
       return json({ build: FN_BUILD, access_token: tok.value, expires_in: 43200 }, null, 0);
+    }
+
+    if (url.searchParams.get('ilvl')) {
+      if (!realm) return json({ build: FN_BUILD, error: 'royaume_absent' }, 400);
+      const rq = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: 1 }, TTL_LIVE);
+      if (!rq.ok) return json(Object.assign({ build: FN_BUILD }, rq.err), rq.err.httpStatus || 502);
+      const rl = path(rq.json, ['data', 'reportData', 'reports', 'data']) || [];
+      if (!rl.length) return json({ build: FN_BUILD, error: 'aucun_rapport', detail: 'Aucun rapport de guilde : pas d’ilvl à relever.' }, 404);
+      const last = rl[0];
+      // Les dégâts subis couvrent tout le monde, soigneurs et tanks compris —
+      // contrairement aux dégâts infligés.
+      const tq = await run(env, Q_TABLE, { code: last.code, start: 0, end: (last.endTime - last.startTime) + 1, type: 'DamageTaken' }, TTL_FIGE);
+      if (!tq.ok) return json(Object.assign({ build: FN_BUILD }, tq.err), tq.err.httpStatus || 502);
+      const entries = path(tq.json, ['data', 'reportData', 'report', 'table', 'data', 'entries']) || [];
+      const joueurs = entries.filter(function (e) { return e.name && e.itemLevel != null; })
+        .map(function (e) { return { joueur: e.name, ilvl: Math.round(e.itemLevel * 10) / 10 }; });
+      return json({
+        build: FN_BUILD, fetchedAt: new Date().toISOString(),
+        rapport: last.code, date: new Date(last.startTime).toISOString().slice(0, 10),
+        joueurs: joueurs
+      });
     }
 
     if (url.searchParams.get('quota')) {
