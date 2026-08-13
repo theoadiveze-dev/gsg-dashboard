@@ -1,9 +1,10 @@
 // Warcraft Logs API v2 (GraphQL) — lecture des rapports de la guilde.
 //
-// Cette fonction ne juge rien. Elle remonte des faits : la liste des rapports,
-// les pulls d'un rapport, les morts avec le sort qui a tué et la seconde, les
-// dégâts pris par joueur, les parses. L'interprétation (« évitable ou non »)
-// se fait côté tableau de bord, avec une table par boss validée à la main.
+// Cette fonction ne juge rien et ne comble aucun trou. Elle remonte des faits :
+// la liste des rapports, les pulls, les morts avec le sort qui a tué et la
+// seconde, les dégâts pris, les parses. Toute erreur HTTP de Warcraft Logs est
+// propagée telle quelle (statut + extrait du corps) : jamais traduite en
+// « guilde introuvable » ou en liste vide.
 //
 // Clés attendues dans les variables d'environnement Cloudflare Pages :
 //   WCL_ID, WCL_SECRET          (obligatoires, type Secret)
@@ -18,7 +19,7 @@
 //   /wcl?parses=CODE[&fight=3]     → classements dps/hps du rapport
 //   &debug=1                       → ajoute la réponse GraphQL brute
 
-const FN_BUILD = 'wcl v1.0.0';
+const FN_BUILD = 'wcl v1.1.0';
 const API = 'https://www.warcraftlogs.com/api/v2/client';
 const TOKEN_URL = 'https://www.warcraftlogs.com/oauth/token';
 const CACHE_S = 300;
@@ -42,35 +43,34 @@ export async function onRequest(context) {
   const region = (url.searchParams.get('region') || env.WCL_REGION || DEF.region).toUpperCase();
 
   try {
-    const token = await getToken(env);
-    if (!token.ok) return json({ build: FN_BUILD, error: 'oauth', status: token.status, body: token.body }, 502);
-
     if (url.searchParams.get('probe')) {
-      const out = { build: FN_BUILD, fetchedAt: new Date().toISOString(), oauth: 'ok', guild: guild, realm: realm || null, region: region };
+      const out = { build: FN_BUILD, fetchedAt: new Date().toISOString(), guild: guild, realm: realm || null, region: region };
       if (!realm) {
         out.error = 'royaume_absent';
-        out.detail = 'Le royaume de la guilde est nécessaire. Appelle /wcl?probe=1&realm=hyjal ou définis WCL_REALM.';
+        out.detail = 'Le royaume de la guilde est nécessaire. Appelle /wcl?probe=1&realm=ysondre ou définis WCL_REALM.';
         return json(out, 400);
       }
-      const q = await gql(token.value, Q_REPORTS, { g: guild, s: realm, r: region, limit: 5 });
-      if (q.errors) { out.error = 'graphql'; out.errors = q.errors; return json(out, 502); }
-      const node = q.data && q.data.reportData && q.data.reportData.reports;
-      const list = (node && node.data) || [];
+      const q = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: 5 });
+      if (!q.ok) return json(Object.assign(out, q.err), q.err.httpStatus || 502);
+      out.oauth = 'ok';
+      const list = path(q.json, ['data', 'reportData', 'reports', 'data']) || [];
       out.guildFound = list.length > 0;
       out.reportCount = list.length;
       out.reports = list.map(mapReport);
-      if (!list.length) out.detail = 'Aucun rapport : vérifie le nom exact de la guilde, le slug du royaume et la région.';
-      if (dbg) out.raw = q.data;
+      if (!list.length) {
+        out.detail = 'Warcraft Logs a répondu correctement mais ne renvoie aucun rapport pour ' + guild + ' — ' + realm + ' (' + region + '). Vérifie le nom exact de la guilde et le slug du royaume.';
+      }
+      if (dbg) out.raw = q.json;
       return json(out);
     }
 
     if (url.searchParams.get('reports')) {
       if (!realm) return json({ build: FN_BUILD, error: 'royaume_absent' }, 400);
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10) || 20, 100);
-      const q = await gql(token.value, Q_REPORTS, { g: guild, s: realm, r: region, limit: limit });
-      if (q.errors) return json({ build: FN_BUILD, error: 'graphql', errors: q.errors }, 502);
-      const list = ((q.data.reportData.reports || {}).data) || [];
-      return json({ build: FN_BUILD, fetchedAt: new Date().toISOString(), guild: guild, realm: realm, region: region, reports: list.map(mapReport) });
+      const q = await run(env, Q_REPORTS, { g: guild, s: realm, r: region, limit: limit });
+      if (!q.ok) return json(Object.assign({ build: FN_BUILD }, q.err), q.err.httpStatus || 502);
+      const list = path(q.json, ['data', 'reportData', 'reports', 'data']) || [];
+      return json({ build: FN_BUILD, fetchedAt: new Date().toISOString(), guild: guild, realm: realm, region: region, reportCount: list.length, reports: list.map(mapReport) });
     }
 
     const code = url.searchParams.get('report') || url.searchParams.get('deaths')
@@ -82,14 +82,19 @@ export async function onRequest(context) {
 
     // Toutes les routes de détail ont besoin du squelette du rapport :
     // acteurs et sorts servent à traduire les IDs en noms.
-    const base = await gql(token.value, Q_REPORT, { code: code });
-    if (base.errors) return json({ build: FN_BUILD, error: 'graphql', errors: base.errors }, 502);
-    const rep = base.data && base.data.reportData && base.data.reportData.report;
-    if (!rep) return json({ build: FN_BUILD, error: 'rapport_introuvable', code: code }, 404);
+    const base = await run(env, Q_REPORT, { code: code });
+    if (!base.ok) return json(Object.assign({ build: FN_BUILD, code: code }, base.err), base.err.httpStatus || 502);
+    const rep = path(base.json, ['data', 'reportData', 'report']);
+    if (!rep) {
+      return json({
+        build: FN_BUILD, error: 'rapport_introuvable', code: code,
+        detail: 'Warcraft Logs a répondu sans erreur mais ne connaît pas ce code de rapport.'
+      }, 404);
+    }
 
     const actors = {}, abilities = {};
-    ((rep.masterData && rep.masterData.actors) || []).forEach(function (a) { actors[a.id] = a; });
-    ((rep.masterData && rep.masterData.abilities) || []).forEach(function (a) { abilities[a.gameID] = a; });
+    (path(rep, ['masterData', 'actors']) || []).forEach(function (a) { actors[a.id] = a; });
+    (path(rep, ['masterData', 'abilities']) || []).forEach(function (a) { abilities[a.gameID] = a; });
     const fights = (rep.fights || []).map(mapFight);
     const window = pickWindow(rep, fights, fightIDs);
     const head = {
@@ -112,10 +117,9 @@ export async function onRequest(context) {
     }
 
     if (url.searchParams.get('deaths')) {
-      const q = await gql(token.value, Q_DEATHS, { code: code, start: window.start, end: window.end });
-      if (q.errors) return json({ build: FN_BUILD, error: 'graphql', errors: q.errors }, 502);
-      const ev = q.data.reportData.report.events;
-      const raw = (ev && ev.data) || [];
+      const q = await run(env, Q_DEATHS, { code: code, start: window.start, end: window.end });
+      if (!q.ok) return json(Object.assign({ build: FN_BUILD, code: code }, q.err), q.err.httpStatus || 502);
+      const raw = path(q.json, ['data', 'reportData', 'report', 'events', 'data']) || [];
       const out = Object.assign(head, {
         fight: fightIDs, window: window,
         deaths: raw.map(function (e) {
@@ -142,12 +146,10 @@ export async function onRequest(context) {
     }
 
     if (url.searchParams.get('damage')) {
-      const q = await gql(token.value, Q_TABLE, {
-        code: code, start: window.start, end: window.end, type: 'DamageTaken'
-      });
-      if (q.errors) return json({ build: FN_BUILD, error: 'graphql', errors: q.errors }, 502);
-      const t = q.data.reportData.report.table;
-      const entries = (t && t.data && t.data.entries) || [];
+      const q = await run(env, Q_TABLE, { code: code, start: window.start, end: window.end, type: 'DamageTaken' });
+      if (!q.ok) return json(Object.assign({ build: FN_BUILD, code: code }, q.err), q.err.httpStatus || 502);
+      const t = path(q.json, ['data', 'reportData', 'report', 'table']);
+      const entries = path(t, ['data', 'entries']) || [];
       const out = Object.assign(head, {
         fight: fightIDs, window: window,
         joueurs: entries.map(function (e) {
@@ -164,12 +166,20 @@ export async function onRequest(context) {
     }
 
     // parses
-    const q = await gql(token.value, Q_RANKS, { code: code, ids: fightIDs });
-    if (q.errors) return json({ build: FN_BUILD, error: 'graphql', errors: q.errors }, 502);
-    const rk = q.data.reportData.report.rankings;
-    return json(Object.assign(head, { fight: fightIDs, rankings: rk && rk.data ? rk.data : rk, raw: dbg ? rk : undefined }));
+    const q = await run(env, Q_RANKS, { code: code, ids: fightIDs });
+    if (!q.ok) return json(Object.assign({ build: FN_BUILD, code: code }, q.err), q.err.httpStatus || 502);
+    const rk = path(q.json, ['data', 'reportData', 'report', 'rankings']);
+    return json(Object.assign(head, {
+      fight: fightIDs,
+      rankings: rk && rk.data ? rk.data : (rk || null),
+      raw: dbg ? rk : undefined
+    }));
   } catch (e) {
-    return json({ build: FN_BUILD, error: 'reseau', message: String(e && e.message).slice(0, 300) }, 502);
+    return json({
+      build: FN_BUILD, error: 'exception',
+      detail: 'La fonction a levé une exception avant de pouvoir répondre.',
+      message: String(e && e.message).slice(0, 300)
+    }, 502);
   }
 }
 
@@ -207,37 +217,79 @@ const Q_RANKS = `query($code:String!,$ids:[Int]){
   reportData{ report(code:$code){ rankings(fightIDs:$ids) } }
 }`;
 
-function gql(token, query, variables) {
-  return fetch(API, {
+// Un appel GraphQL, token compris. Un 401 signifie presque toujours un token
+// mis en cache devenu invalide : on le jette et on retente une fois. Tout autre
+// statut non-200 remonte tel quel — le front doit pouvoir dire « WCL a répondu
+// 429 » et non « aucun rapport ».
+async function run(env, query, variables, retried) {
+  const tok = await getToken(env, !!retried);
+  if (!tok.ok) {
+    return { ok: false, err: { error: 'oauth', detail: 'Warcraft Logs a refusé les identifiants (' + tok.status + ').', status: tok.status, body: tok.body, httpStatus: 502 } };
+  }
+
+  const res = await fetch(API, {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { Authorization: 'Bearer ' + tok.value, 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ query: query, variables: variables })
-  }).then(function (res) {
-    return res.text().then(function (t) {
-      try { return JSON.parse(t); }
-      catch (e) { return { errors: [{ message: 'reponse_non_json', status: res.status, body: t.slice(0, 300) }] }; }
-    });
   });
+  const text = await res.text();
+
+  if (res.status === 401 && !retried) {
+    await dropToken(env);
+    return run(env, query, variables, true);
+  }
+
+  let body = null;
+  try { body = JSON.parse(text); } catch (e) { body = null; }
+
+  if (res.status !== 200) {
+    return {
+      ok: false, err: {
+        error: 'wcl_http', status: res.status,
+        detail: res.status === 429 ? 'Quota Warcraft Logs atteint — réessaie dans quelques minutes.'
+          : res.status === 401 || res.status === 403 ? 'Warcraft Logs a refusé l’accès (clé ou droits).'
+          : 'Warcraft Logs a répondu ' + res.status + '.',
+        body: text.slice(0, 400), httpStatus: 502
+      }
+    };
+  }
+  if (!body) {
+    return { ok: false, err: { error: 'reponse_non_json', detail: 'Réponse illisible de Warcraft Logs.', body: text.slice(0, 400), httpStatus: 502 } };
+  }
+  if (body.errors) {
+    return { ok: false, err: { error: 'graphql', detail: 'Requête refusée par Warcraft Logs.', errors: body.errors, httpStatus: 502 } };
+  }
+  if (!body.data) {
+    return { ok: false, err: { error: 'reponse_vide', detail: 'Warcraft Logs a répondu 200 sans données.', body: text.slice(0, 400), httpStatus: 502 } };
+  }
+  return { ok: true, json: body };
+}
+
+function tokenKey(env) { return new Request('https://wcl-token.internal/' + hash(env.WCL_ID)); }
+
+async function dropToken(env) {
+  try { await caches.default.delete(tokenKey(env)); } catch (e) { /* rien à jeter */ }
 }
 
 // Le token client_credentials vit longtemps : on le garde dans le cache de
 // l'edge pour ne pas rappeler l'OAuth à chaque requête.
-async function getToken(env) {
-  const key = new Request('https://wcl-token.internal/' + hash(env.WCL_ID));
+async function getToken(env, fresh) {
+  const key = tokenKey(env);
   const cache = caches.default;
-  try {
-    const hit = await cache.match(key);
-    if (hit) { const j = await hit.json(); if (j && j.access_token) return { ok: true, value: j.access_token }; }
-  } catch (e) { /* cache indisponible : on redemande */ }
+  if (!fresh) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) { const j = await hit.json(); if (j && j.access_token) return { ok: true, value: j.access_token }; }
+    } catch (e) { /* cache indisponible : on redemande */ }
+  }
 
-  const body = new URLSearchParams({ grant_type: 'client_credentials' });
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: {
       Authorization: 'Basic ' + btoa(env.WCL_ID + ':' + env.WCL_SECRET),
       'Content-Type': 'application/x-www-form-urlencoded'
     },
-    body: body
+    body: new URLSearchParams({ grant_type: 'client_credentials' })
   });
   const text = await res.text();
   if (res.status !== 200) return { ok: false, status: res.status, body: text.slice(0, 300) };
@@ -253,6 +305,15 @@ async function getToken(env) {
 }
 
 // ─────────────────────────────── helpers
+
+function path(obj, keys) {
+  let cur = obj;
+  for (let i = 0; i < keys.length; i++) {
+    if (cur == null || typeof cur !== 'object') return null;
+    cur = cur[keys[i]];
+  }
+  return cur == null ? null : cur;
+}
 
 function mapReport(r) {
   return {
