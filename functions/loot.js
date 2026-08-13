@@ -8,7 +8,7 @@
 //   /loot?season=15  → force une saison
 //   /loot?debug=1    → réponse brute de wowaudit (pour inspecter les champs)
 
-const FN_BUILD = 'loot v1.23.0';
+const FN_BUILD = 'loot v1.24.0';
 const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
 const CACHE_S = 600;
 
@@ -55,6 +55,7 @@ function call(path) {
 // Tolérante à la forme exacte : on ne garde que ce dont le journal a besoin.
 function normalize(raw) {
   const list = Array.isArray(raw) ? raw
+    : Array.isArray(raw && raw.history_items) ? raw.history_items
     : Array.isArray(raw && raw.loot_history) ? raw.loot_history
     : Array.isArray(raw && raw.loot) ? raw.loot
     : Array.isArray(raw && raw.entries) ? raw.entries
