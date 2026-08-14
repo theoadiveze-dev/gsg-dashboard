@@ -258,8 +258,8 @@ export async function onRequest(context) {
           return {
             joueur: e.name, classe: e.type || e.icon || '', total: e.total,
             parSort: (e.abilities || []).map(function (a) {
-              return { sort: a.name, total: a.total, coups: a.hitCount != null ? a.hitCount : a.uses };
-            }).sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).slice(0, 12)
+              return { sort: a.name, total: a.total, id: a.guid || a.id || null, coups: a.hitCount != null ? a.hitCount : a.uses };
+            }).sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).slice(0, 30)
           };
         }).sort(function (a, b) { return (b.total || 0) - (a.total || 0); })
       });
