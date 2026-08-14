@@ -36,6 +36,12 @@ async function probe(wishRaw) {
     clesTopNiveau: Object.keys(wishRaw || {}),
     clesPersonnage: first ? Object.keys(first) : [],
     champsNiveau: first ? levelish(first) : {},
+    // Un objet de wishlist tel que wowaudit l'envoie : c'est là qu'on lit si le
+    // tier est marqué, et sous quel nom de champ.
+    objet: (function () {
+      const it = firstItem(wishRaw);
+      return it ? { cles: Object.keys(it), brut: it } : null;
+    })(),
     exemple: first ? { name: first.name, realm: first.realm } : null
   };
   try {
@@ -78,6 +84,39 @@ function levelish(obj) {
   return hit;
 }
 
+// Premier objet de wishlist trouvé, dans n'importe quelle instance.
+function firstItem(raw) {
+  const chars = (raw && raw.characters) || [];
+  for (const c of chars) {
+    for (const inst of c.instances || []) {
+      for (const df of inst.difficulties || []) {
+        const wl = df.wishlist || {};
+        for (const enc of wl.encounters || []) {
+          if ((enc.items || []).length) return enc.items[0];
+        }
+        for (const k of Object.keys(wl)) {
+          if (/trinket/i.test(k) && Array.isArray(wl[k]) && wl[k].length) return wl[k][0];
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function setFlag(it) {
+  // wowaudit ne documente pas un champ unique pour le tier : on accepte toutes
+  // les formes plausibles et on expose le résultat tel quel.
+  const keys = ['tier_set', 'tierset', 'is_tier', 'is_tier_set', 'set', 'set_item', 'item_set', 'tier', 'set_id', 'set_name'];
+  for (const k of keys) {
+    const v = it[k];
+    if (v === true) return true;
+    if (typeof v === 'number' && v > 0) return true;
+    if (typeof v === 'string' && v.trim()) return true;
+    if (v && typeof v === 'object') return true;
+  }
+  return false;
+}
+
 function normalize(raw) {
   const chars = (raw && raw.characters) || [];
   return chars.map(function (c) {
@@ -100,6 +139,7 @@ function normalize(raw) {
             (it.wishes || []).forEach(function (w) {
               items.push({
                 item: it.name, itemId: it.id || null, slot: it.slot || 'Bijou',
+                tierSet: setFlag(it),
                 boss: it.boss || it.source || '—', raid: inst.name || '',
                 spec: w.specialization || '', difficulty: df.difficulty || '',
                 pct: typeof w.percentage === 'number' ? Math.round(w.percentage * 10) / 10 : null,
@@ -117,6 +157,7 @@ function normalize(raw) {
                 item: it.name,
                 itemId: it.id || null,
                 slot: it.slot || '—',
+                tierSet: setFlag(it),
                 boss: enc.name || '—',
                 raid: inst.name || '',
                 spec: w.specialization || '',

@@ -11,8 +11,12 @@ export async function onRequest(context) {
     if (list.error) return json(list, 502);
     if (debug === 'list') return json({ raw: list });
 
+    // Avant le début de saison, on garde quand même ce qui est à venir : les
+    // soirées hors raid (M+, tests, événements) doivent apparaître au calendrier.
+    const today = new Date().toISOString().slice(0, 10);
     const all = (Array.isArray(list) ? list : list.raids || []).filter(function (r) {
-      return String(r.date || '') >= SEASON_START;
+      const dt = String(r.date || '');
+      return dt >= SEASON_START || dt >= today;
     });
     const horizon = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
     const near = all.filter(function (r) { return String(r.date) <= horizon; }).slice(0, 15);
@@ -69,6 +73,7 @@ function norm(r, det) {
 
   return {
     id: r.id,
+    horsSaison: String(r.date || '') < SEASON_START,
     mythic: mythic,
     encounters: encounters,
     date: r.date || '',
