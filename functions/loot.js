@@ -9,10 +9,16 @@
 //   /loot?debug=1    → réponse brute de wowaudit (pour inspecter les champs)
 
 const FN_BUILD = 'loot v1.24.0';
-const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
+// La clé vit dans Cloudflare Pages (Variables and Secrets, nom WA_KEY) et n'est
+// plus écrite dans le dépôt : la renouveler ne demande plus de toucher au code.
+// KEY est posée au début de chaque requête, avant tout appel à wowaudit.
+let KEY = '';
+function setKey(env) { KEY = (env && env.WA_KEY ? String(env.WA_KEY) : '').trim(); return !!KEY; }
+const NO_KEY = { error: 'cle_absente', detail: "WA_KEY n'est pas définie sur ce déploiement. Cloudflare Pages → Settings → Variables and secrets (Production), puis nouveau déploiement." };
 const CACHE_S = 600;
 
 export async function onRequest(context) {
+  if (!setKey(context.env)) return json(Object.assign({ build: FN_BUILD }, NO_KEY), 500);
   const url = new URL(context.request.url);
   try {
     let season = url.searchParams.get('season');
@@ -46,7 +52,7 @@ export async function onRequest(context) {
 
 function call(path) {
   return fetch('https://wowaudit.com' + path, {
-    headers: { Authorization: WA_KEY, Accept: 'application/json' }
+    headers: { Authorization: KEY, Accept: 'application/json' }
   }).then(function (res) {
     return res.text().then(function (t) { return { status: res.status, text: t }; });
   });

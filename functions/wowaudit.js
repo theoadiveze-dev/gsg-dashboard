@@ -1,17 +1,22 @@
 // Données wowaudit : wishlists (Droptimizer) et, via /wowaudit?probe=1, un
 // inventaire des champs réellement exposés par l'API — c'est ainsi qu'on
 // détermine si l'ilvl existe côté wowaudit au lieu de le supposer.
- // redeploy 16/08
-const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
+// La clé vit dans Cloudflare Pages (Variables and Secrets, nom WA_KEY) et n'est
+// plus écrite dans le dépôt : la renouveler ne demande plus de toucher au code.
+// KEY est posée au début de chaque requête, avant tout appel à wowaudit.
+let KEY = '';
+function setKey(env) { KEY = (env && env.WA_KEY ? String(env.WA_KEY) : '').trim(); return !!KEY; }
+const NO_KEY = { error: 'cle_absente', detail: "WA_KEY n'est pas définie sur ce déploiement. Cloudflare Pages → Settings → Variables and secrets (Production), puis nouveau déploiement." };
 const CACHE_S = 3600;
 const UPGRADE_LABEL = { huge: 'Gros gain', big: 'Bon gain', medium: 'Gain moyen', small: 'Petit gain', tiny: 'Gain marginal', none: 'Aucun gain' };
 
 export async function onRequest(context) {
+  if (!setKey(context.env)) return json(NO_KEY, 500);
   const url = new URL(context.request.url);
   try {
     const fresh = !!url.searchParams.get('fresh');
     const res = await fetch('https://wowaudit.com/v1/wishlists', {
-      headers: { Authorization: WA_KEY, Accept: 'application/json' },
+      headers: { Authorization: KEY, Accept: 'application/json' },
       cf: fresh ? { cacheTtl: 0, cacheEverything: false } : { cacheTtl: CACHE_S, cacheEverything: true }
     });
     const text = await res.text();
@@ -47,7 +52,7 @@ async function probe(wishRaw) {
   };
   try {
     const r = await fetch('https://wowaudit.com/v1/characters', {
-      headers: { Authorization: WA_KEY, Accept: 'application/json' }
+      headers: { Authorization: KEY, Accept: 'application/json' }
     });
     const t = await r.text();
     out.characters = { status: r.status };
