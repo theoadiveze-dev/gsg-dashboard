@@ -1,6 +1,7 @@
 // Données wowaudit : wishlists (Droptimizer) et, via /wowaudit?probe=1, un
 // inventaire des champs réellement exposés par l'API — c'est ainsi qu'on
 // détermine si l'ilvl existe côté wowaudit au lieu de le supposer.
+ // redeploy 16/08
 const WA_KEY = '39e0aa80209ba13e7f54958b3553037f1a9cc8f1b6095a74facc93170c5be9f9';
 const CACHE_S = 3600;
 const UPGRADE_LABEL = { huge: 'Gros gain', big: 'Bon gain', medium: 'Gain moyen', small: 'Petit gain', tiny: 'Gain marginal', none: 'Aucun gain' };
