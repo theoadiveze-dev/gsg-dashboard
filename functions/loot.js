@@ -8,7 +8,7 @@
 //   /loot?season=15  → force une saison
 //   /loot?debug=1    → réponse brute de wowaudit (pour inspecter les champs)
 
-const FN_BUILD = 'loot v1.24.0';
+const FN_BUILD = 'loot v1.25.0';
 // La clé vit dans Cloudflare Pages (Variables and Secrets, nom WA_KEY) et n'est
 // plus écrite dans le dépôt : la renouveler ne demande plus de toucher au code.
 // KEY est posée au début de chaque requête, avant tout appel à wowaudit.
