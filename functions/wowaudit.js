@@ -10,9 +10,20 @@ const NO_KEY = { error: 'cle_absente', detail: "WA_KEY n'est pas définie sur ce
 const CACHE_S = 3600;
 const UPGRADE_LABEL = { huge: 'Gros gain', big: 'Bon gain', medium: 'Gain moyen', small: 'Petit gain', tiny: 'Gain marginal', none: 'Aucun gain' };
 
+const FN_BUILD = 'wowaudit v1.9.0';
 export async function onRequest(context) {
   if (!setKey(context.env)) return json(NO_KEY, 500);
   const url = new URL(context.request.url);
+  // Exploration : /wowaudit?path=/v1/xxx renvoie la réponse brute d'un endpoint
+  // wowaudit. Sert à trouver où vit le tier-status sans deviner.
+  const raw = url.searchParams.get('path');
+  if (raw) {
+    if (!/^\/v1\//.test(raw)) return json({ error: 'chemin_refuse', detail: 'Seuls les chemins /v1/… sont autorisés.' }, 400);
+    const r = await fetch('https://wowaudit.com' + raw, { headers: { Authorization: KEY, Accept: 'application/json' } });
+    const t = await r.text();
+    let j = null; try { j = JSON.parse(t); } catch (e) { j = null; }
+    return json({ build: FN_BUILD, path: raw, status: r.status, json: j, body: j ? undefined : t.slice(0, 600) }, r.ok ? 200 : 502, 0);
+  }
   try {
     const fresh = !!url.searchParams.get('fresh');
     const res = await fetch('https://wowaudit.com/v1/wishlists', {
