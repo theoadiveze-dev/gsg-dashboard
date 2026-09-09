@@ -7,10 +7,10 @@
 let KEY = '';
 function setKey(env) { KEY = (env && env.WA_KEY ? String(env.WA_KEY) : '').trim(); return !!KEY; }
 const NO_KEY = { error: 'cle_absente', detail: "WA_KEY n'est pas définie sur ce déploiement. Cloudflare Pages → Settings → Variables and secrets (Production), puis nouveau déploiement." };
-const CACHE_S = 3600;
+const CACHE_S = 900;
 const UPGRADE_LABEL = { huge: 'Gros gain', big: 'Bon gain', medium: 'Gain moyen', small: 'Petit gain', tiny: 'Gain marginal', none: 'Aucun gain' };
 
-const FN_BUILD = 'wowaudit v1.9.0';
+const FN_BUILD = 'wowaudit v1.9.1';
 export async function onRequest(context) {
   if (!setKey(context.env)) return json(NO_KEY, 500);
   const url = new URL(context.request.url);
